@@ -114,3 +114,77 @@ function signInAE(id, bemsOrBadge, overrideTraining) {
 This is old javascript function where for Reason - Already_exists we are returning the modal to prevent an AE to sign into multiple lotos.
 
 Now i have done several changes . I have given the above code just to remember what was there previously ok
+
+
+Now i think you can remember like in previous JS function which i have pasted firstly at top , it shows cannotsignintoloto modal for showing by using result.message ok. But now we have used showAEWarningPartial function which only shows the message related to AE signing into same Loto , and that previous modal was AE signing into multiple lotos ok.
+
+So in AEWarningPartial we should make the changes to show both the messages depending on the two cases which i told correct?
+
+And the message should include more Properties like Program LineNumber and Site which is not there is AssignedAEViewModel, so we need to change that also by using another ViewModel that uses all the properties which are needed correct. 
+
+TASK : We should show Warning Partial that contains both messages accordingly now by checking the conditions and all. 
+Two scenarios: 1. Prevent an AE to sign into same loto.
+                                2. Prevent an AE to sign into multiple loto.
+
+
+<!-- Prevent an AE from signing into multiple LOTOs modal -->
+<div class="modal fade" id="cannotSignIntoLotoModal" tabindex="-1" role="dialog" aria-labelledby="CannotSignIntoLoto" aria-hidden="true">
+	<div class="modal-dialog modal-md" role="document">
+		<div class="modal-content">
+			<div class="modal-header red darken-1 white-text">
+				<h4 class="select-line-modal-title">Cannot Sign-in AE</h4>
+				<button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+					<span aria-hidden="true">&times;</span>
+				</button>
+			</div>
+			<div class="modal-body" id="cannotSignIntoLotoModalBody" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+				<div id="already-signed-in-message">
+				</div>
+			</div>
+
+			<div class="modal-footer" style="margin-top:4rem;">
+				<div id="signOutAction" style="float:right" class="row float-right">
+					<button type="button" class="btn btn-primary btn-rounded float-right" data-dismiss="modal" aria-label="Close">
+						Dismiss
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+The above div was there to render that modal in javascript ok.
+
+And to render warning partial i have added one div. You can check below:
+<div>
+										<div class="tab-content" id="nav-tabContent">
+											<div class="card tab-pane fade show active" id="sign-in" role="tabpanel" aria-labelledby="sign-in-tab" style="border-top-left-radius: 0;">
+												<div id="sign-in-partial" class="card-body d-flex flex-column" style="margin-top:0%;">
+													@Html.Partial("Partials/LotoSignInCard", new Shield.Ui.App.ViewModels.LotoAEManagementViewModel
+													{
+													Header = Model.Header,
+													Loto = Model.Loto,
+													SessionService = Model.SessionService,
+													Message = Model.SignInCardMessage
+													})
+												</div>
+											</div>
+											<div id="ae-warning-partial" style="display:none;"></div>
+											<div class="card tab-pane fade" id="sign-in-visitor" role="tabpanel" aria-labelledby="sign-in-visitor-tab" style="border-top-left-radius: 0;">
+												<div id="visitor-sign-in-partial" class="card-body d-flex flex-column" style="margin-top:0%;">
+													@Html.Partial("Partials/LotoVisitorSignInCard", new Shield.Ui.App.ViewModels.LotoAEManagementViewModel
+													{
+													Header = Model.Header,
+													Loto = Model.Loto,
+													SessionService = Model.SessionService,
+													Message = Model.SignInCardMessage
+													})
+												</div>
+											</div>
+										</div>
+									</div>
+
+
+If you want full LotoDetail.cshtml file code which includes above html div, i can give ok. 
+
+Now first analyze and understand carefully and provide the simple and optimize solution that works for both cases seemlessly without doing any unnecessary things ok
