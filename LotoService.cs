@@ -1,840 +1,532 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json;
-using Shield.Common;
+﻿using Azure.Core;
+using Shield.Common.Constants;
 using Shield.Common.Models.Common;
 using Shield.Common.Models.Loto;
-using Shield.Common.Models.Loto.Shared;
-using Shield.Ui.App.Common;
-using Shield.Ui.App.Models.CommonModels;
-using Shield.Ui.App.Models.HecpModels;
-using Shield.Ui.App.Models.LotoModels;
+using Shield.Services.Loto.Data;
+using Shield.Services.Loto.Models.Discrete;
+using Shield.Services.Loto.Models.Hecp;
+using Shield.Services.Loto.Models.Loto;
+using Shield.Services.Loto.Services.Interfaces;
+using Shield.Services.Loto.Translators;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Http;
-using System.Text;
 using System.Threading.Tasks;
+using Shield.Services.Loto.ShieldConstants;
 
-namespace Shield.Ui.App.Services
+namespace Shield.Services.Loto.Services
 {
     public class LotoService
     {
-        private HttpClientService _clientService;
+        private ILotoDAO _lotoDao;
+        private IStatusDAO _statusDao;
+        private ILotoTransactionService _lotoTransactionService;
+        private IsolationService _isolationService;
+        private IDiscreteDAO _discreteDao;
+        private IDiscreteService _discreteService;
+        private IMyLearningDataService _myLearningDataService;
+        private UserService _userService;
+        private IEmailService _emailService;
+        private readonly string _shield_Environment;
+        private readonly string _shield_URL;
+        private readonly string _footer;
 
-        public LotoService(HttpClientService clientService)
+        public LotoService(ILotoDAO dao, IStatusDAO statusDao, ILotoTransactionService lts, IsolationService iservice, IDiscreteDAO discreteDao, IDiscreteService discreteService, IMyLearningDataService myLearningDataService, UserService userService, IEmailService emailService)
         {
-            _clientService = clientService;
+            _lotoDao = dao;
+            _statusDao = statusDao;
+            _lotoTransactionService = lts;
+            _isolationService = iservice;
+            _discreteDao = discreteDao;
+            _discreteService = discreteService;
+            _myLearningDataService = myLearningDataService;
+            _userService = userService;
+            _emailService = emailService;
+            _shield_Environment = Environment.GetEnvironmentVariable(Constants.SHIELD_ENVIRONMENT);
+            _shield_URL = Environment.GetEnvironmentVariable(Constants.SHIELD_URL);
+            _footer = string.Format(Constants.EmailFooter,
+                           !string.IsNullOrEmpty(_shield_Environment) ? _shield_Environment + " Environment" : string.Empty,
+                           " (" + _shield_URL + ")");
         }
 
-        public virtual async Task<HTTPResponseWrapper<Models.LotoModels.Loto>> Create(string workPackage, string reason, string site, string model, string lineNumber, User user, List<int> associatedMinorModelIdList)
+        public virtual List<LotoDetails> GetLotosByModelAndLineNumber(string model, string lineNumber)
         {
-            try
-            {
-                string username = user.FirstName + " " + user.LastName;
-                string jsonItem = JsonConvert.SerializeObject(new Models.CommonModels.CreateLotoRequest
+            return _lotoDao
+                .GetLotos(model, lineNumber)
+                .Select(loto =>
                 {
-                    WorkPackage = workPackage,
-                    Reason = reason,
-                    Site = site,
-                    Model = model,
-                    LineNumber = lineNumber,
-                    CreatedByBemsId = user.BemsId,
-                    CreatedByName = username,
-                    AssociatedMinorModelIdList = associatedMinorModelIdList
-                });
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/");
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                string value = await msg.Content.ReadAsStringAsync();
-
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<Models.LotoModels.Loto>>(value);
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-                return null;
-            }
+                    return LotoTranslator.ToLotoSummary(loto);
+                })
+                .ToList();
         }
 
-        public virtual async Task<HTTPResponseWrapper<Models.LotoModels.Loto>> CreateLotoFromDiscrete(Models.CommonModels.CreateLotoRequest request)
+        public virtual LotoDetails Create(Shield.Services.Loto.Models.Common.CreateLotoRequest request)
         {
-            try
+            DateTime now = DateTime.UtcNow;
+
+            List<LotoAssociatedModelData> lotoAssociatedModelDataList = new List<LotoAssociatedModelData>();
+
+            //if minor models are selected, insert all the records into LotoAssociatedModelData
+            if (request.AssociatedMinorModelIdList?.Count > 0)
             {
-                string jsonItem = JsonConvert.SerializeObject(request);
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/FromDiscrete/");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                var msg = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                string value = await msg.Content.ReadAsStringAsync();
-
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<Models.LotoModels.Loto>>(value);
+                lotoAssociatedModelDataList.AddRange(request.AssociatedMinorModelIdList.Select(minorModelId => new LotoAssociatedModelData { MinorModelId = minorModelId }));
             }
-            catch (Exception ex)
+            var lotoToCreate = new LotoDetails
             {
-                Console.Error.WriteLine(ex);
-                return null;
-            }
+                LineNumber = request.LineNumber,
+                Model = request.Model,
+                Reason = request.Reason,
+                Site = request.Site,
+                WorkPackage = request.WorkPackage,
+                CreatedByBemsId = request.CreatedByBemsId,
+                Status = _statusDao.GetStatusById(1),
+                LotoAssociatedModelDataList = lotoAssociatedModelDataList
+            };
+
+            var res = _lotoDao.Create(lotoToCreate);
+
+            _lotoTransactionService.AddTransaction(res.Id, $"Loto for line {lotoToCreate.LineNumber} created by {request.CreatedByName} ({lotoToCreate.CreatedByBemsId})");
+            _lotoTransactionService.AddTransaction(res.Id, $"{request.CreatedByName} ({request.CreatedByBemsId}) is the GC responsible for this Line #{request.LineNumber} at the time of this LOTO Creation");
+            _lotoTransactionService.AddTransaction(res.Id, $"{request.CreatedByName} ({request.CreatedByBemsId}) Created LOTO with Work Package: {request.WorkPackage} and Reason: {request.Reason}");
+            return res;
         }
 
-        public virtual async Task<HTTPResponseWrapper<Models.LotoModels.Loto>> Update(Models.LotoModels.Loto loto)
+        public virtual LotoDetails CreateLotoFromDiscrete(Shield.Services.Loto.Models.Common.CreateLotoRequest request)
         {
-            try
+            LotoDetails loto = Create(request);
+
+            StatusChangeRequest statusChangeRequest = new StatusChangeRequest
             {
-                string jsonItem = JsonConvert.SerializeObject(loto);
+                Id = request.Discrete.Id,
+                BemsId = request.CreatedByBemsId,
+                DisplayName = request.CreatedByName
+            };
 
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto");
+            Discrete discrete = AssignedToLoto(statusChangeRequest);
 
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PutAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
+            loto.Discrete = discrete;
 
-                HTTPResponseWrapper<Shield.Ui.App.Models.LotoModels.Loto> response = JsonConvert.DeserializeObject<HTTPResponseWrapper<Shield.Ui.App.Models.LotoModels.Loto>>(await msg.Content.ReadAsStringAsync());
+            loto = Update(loto);
 
-                return response;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-                return null;
-            }
+            return loto;
         }
 
-        public virtual async Task<ObjectResult> DeleteLotoById(int lotoId)
+
+        public virtual async Task<HTTPResponseWrapper<LotoDetails>> SignInPAE(SigningPAERequest req)
         {
-            try
-            {
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/DeleteLoto/" + lotoId);
-                string jsonItem = JsonConvert.SerializeObject(new { id = lotoId });
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
+            HTTPResponseWrapper<LotoDetails> response ;
 
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
+            LotoDetails lotoToUpdate = _lotoDao.GetLotoById(req.LotoId);
+            DateTime now = DateTime.UtcNow;
+
+            LotoDetails lotoData = _lotoDao.Update(lotoToUpdate);
+
+            List<string> courseCodeList = new List<string>
                 {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var response = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
+                    TrainingCourses.ANNUAL_REQUIRED_LOTO_FIELD_OBSERVATION_TRAINING,
+                    TrainingCourses.AIRCRAFT_HAZARDOUS_ENERGY_CONTROL
+                };
+            TrainingInfo trainingInfo = await _myLearningDataService.GetMyLearningDataAsync(req.BemsId, courseCodeList);
+            List<string> invalidTrainings = trainingInfo.MyLearningDataResponse.Where(x => !x.IsTrainingValid).Select(x => x.CertCode).ToList();
 
-                string responseMessage = await response.Content.ReadAsStringAsync();
+            bool isAllTrainingValid = !invalidTrainings.Any();
+            string trainingText = invalidTrainings.Count > 1 ? "trainings" : "training";
+            string trainingCodes = string.Join(", ", invalidTrainings);
 
-                if (response.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    return new ObjectResult(responseMessage) { StatusCode = 200 };
-                }
-                else
-                {
-                    return new ObjectResult("Failed to delete isolation.") { StatusCode = 500 };
-                }
-
-            }
-            catch (Exception ex)
+            if (lotoToUpdate != null && (req.OverrideTraining || isAllTrainingValid))
             {
-                Console.Error.WriteLine(ex);
-                return new ObjectResult("Failed to delete isolation.") { StatusCode = 500 }; ;
-            }
+                    lotoToUpdate.AssignedPAEBems = req.BemsId;
+                    lotoToUpdate.PAESignInTime = now;
 
+                    if (lotoToUpdate.Status.Description == "Transfer")
+                    {
+                        lotoToUpdate.Status = _statusDao.GetStatusByDescription("Active");
 
-        }
-
-        public virtual async Task<ObjectResult> DeleteIsolation(int isoId, int lotoId)
-        {
-            try
-            {
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Isolation/IsolationRemoval/IsolationId/" + isoId + "/lotoId/" + lotoId);
-                string jsonItem = JsonConvert.SerializeObject(new { id = isoId });
-
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var response = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                string responseMessage = await response.Content.ReadAsStringAsync();
-
-                if (response.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    return new ObjectResult(responseMessage) { StatusCode = 200 };
-                }
-                else
-                {
-                    return new ObjectResult("Failed to delete isolation.") { StatusCode = 500 };
-                }
-
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-                return new ObjectResult("Failed to delete isolation.") { StatusCode = 500 };
-            }
-
-        }
-
-        public virtual async Task<List<Models.LotoModels.Loto>> GetLotosByLineNumberAndModel(string lineNumber, string model)
-        {
-            try
-            {
-                var response = await _clientService.GetClient().GetAsync(new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/" + $"Program/{model}/LineNumber/{lineNumber}"));
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<List<Models.LotoModels.Loto>>>(await response.Content.ReadAsStringAsync()).Data;
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine("GetLotoByLineNumberAndModel ---  " + e.Message);
-                return new List<Models.LotoModels.Loto>();
-            }
-        }
-
-        public virtual async Task<Models.LotoModels.Loto> GetLotoDetail(int lotoId)
-        {
-            try
-            {
-                var response = await _clientService.GetClient().GetAsync(new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/LotoDetail/LotoId/" + lotoId));
-                var resContent = await response.Content.ReadAsStringAsync();
-                var deserializedRes = JsonConvert.DeserializeObject<HTTPResponseWrapper<Models.LotoModels.Loto>>(resContent).Data;
-                return deserializedRes;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("GetLotoDetail exception: ");
-                Console.Error.WriteLine(ex);
-                return null;
-            }
-        }
-
-        public virtual async Task<HTTPResponseWrapper<Models.LotoModels.Loto>> AssignPAE(int paeBemsId, int lotoId, string paeDisplayName,bool overrideTraining, string reasonToOverride, int gcBemsId)
-        {
-            try
-            {
-                string jsonItem = JsonConvert.SerializeObject(new SigningPAERequest
-                {
-                    BemsId = paeBemsId,
-                    LotoId = lotoId,
-                    PAEName = paeDisplayName,
-                    OverrideTraining = overrideTraining,
-                    ReasonToOverrideTriaining = reasonToOverride,
-                    GcBemsId = gcBemsId
-                });
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/PAESignIn");
-
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                string strResponse = await msg.Content.ReadAsStringAsync();
-
-                HTTPResponseWrapper<Models.LotoModels.Loto> pae = JsonConvert.DeserializeObject<HTTPResponseWrapper<Models.LotoModels.Loto>>(strResponse);
-
-                return pae;
-
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-
-                return null;
-            }
-        }
-
-        public virtual async Task<List<LotoTransaction>> GetLotoTransactionsByLotoId(int lotoId)
-        {
-            try
-            {
-                Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + "LotoTransaction/LotoId/" + lotoId);
-                var msg = await _clientService.GetClient().GetAsync(uri);
-                List<LotoTransaction> list = JsonConvert.DeserializeObject<HTTPResponseWrapper<List<LotoTransaction>>>(await msg.Content.ReadAsStringAsync()).Data;
-                list = list.OrderByDescending(c => c.Date).ToList();
-                return list;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-                return new List<LotoTransaction>();
-            }
-
-        }
-
-        public virtual async Task<HTTPResponseWrapper<AssignedAE>> AssignAE(AssignedAE aeToAssign, bool overrideTraining, string GCDisplayName, int GCBemsId, string reasonToOverride)
-        {
-            try
-            {
-                string jsonItem = JsonConvert.SerializeObject(new SigningAERequest
-                {
-                    AEBemsId = aeToAssign.AEBemsId,
-                    LotoId = aeToAssign.LotoId,
-                    AEName = aeToAssign.AEName,
-                    OverrideTraining = overrideTraining,
-                    ReasonToOverrideTriaining = reasonToOverride,
-                    UserName = GCDisplayName,
-                    UserBemsId = GCBemsId
-                });
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/AESignIn");
-
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
+                            if (req.OverrideTraining)
+                            {
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) signed in as PAE. Training ({trainingCodes}) was overrided because :: {req.ReasonToOverrideTriaining} ");
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) changed LOTO status to Active");
+                                if (req.BemsId == req.GcBemsId)
+                                {
+                                    var isEmailSent = SendEmailToPAEManager(req.LotoId, req.BemsId, req.GcBemsId, req.ReasonToOverrideTriaining, trainingCodes);
+                                     return response = new HTTPResponseWrapper<LotoDetails>
+                                    {
+                                        Status = Common.Constants.ShieldHttpWrapper.Status.SUCCESS,
+                                        Message = $"Signed in {req.PAEName} as an PAE.Email has been sent to your Manager for overriding the {trainingText}.",
+                                        Data = lotoData
+                                    };
+                                }
+                            }
+                            else
+                            {
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) signed in as PAE.");
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) changed LOTO status to Active");
+                            }
+                        }
+                    else
+                    {
+                            if (req.OverrideTraining)
+                            {
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) signed in as PAE. Training ({trainingCodes}) was overrided because :: {req.ReasonToOverrideTriaining} ");
+                                if (req.BemsId == req.GcBemsId)
+                                {
+                                    var isEmailSent = SendEmailToPAEManager(req.LotoId, req.BemsId, req.GcBemsId, req.ReasonToOverrideTriaining, trainingCodes);
+                                    return response = new HTTPResponseWrapper<LotoDetails>
+                                    {
+                                        Status = Common.Constants.ShieldHttpWrapper.Status.SUCCESS,
+                                        Message = $"Signed in {req.PAEName} as an PAE.Email has been sent to your Manager for overriding the {trainingText}.",
+                                        Data = lotoData
+                                    };
+                                }
+                            }
+                            else
+                            {
+                                _lotoTransactionService.AddTransaction(req.LotoId, $"{req.PAEName} ({req.BemsId}) signed in as PAE.");
+                            }
+                    };
                 
-                string strResponse = await msg.Content.ReadAsStringAsync();
-
-                HTTPResponseWrapper<AssignedAE> ae = JsonConvert.DeserializeObject<HTTPResponseWrapper<AssignedAE>>(strResponse);
-
-                return ae;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-
-                return null;
-            }
-        }
-
-        public virtual async Task<HTTPResponseWrapper<AssignedAE>> AssignVisitor(AssignedAE aeToAssign, bool overrideTraining, string GCDisplayName, int GCBemsId)
-        {
-            try
-            {
-                string jsonItem = JsonConvert.SerializeObject(new SigningAERequest
+                response = new HTTPResponseWrapper<LotoDetails>
                 {
-                    AEBemsId = aeToAssign.AEBemsId,
-                    LotoId = aeToAssign.LotoId,
-                    AEName = aeToAssign.AEName,
-                    OverrideTraining = overrideTraining,
-                    UserName = GCDisplayName,
-                    UserBemsId = GCBemsId
-                });
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/VisitorSignIn");
-
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<AssignedAE>>(await msg.Content.ReadAsStringAsync());
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-
-                return null;
-            }
-        }
-
-        public virtual async Task<HTTPResponseWrapper<LotoIsolationsDiscreteHecp>> InstallIsolation(InstallIsolationRequestWithId iso, User installer)
-        {
-            try
-            {
-                InstallIsolationRequestWithId request = new InstallIsolationRequestWithId
-                {
-                    LotoId = iso.LotoId,
-                    SystemCircuitId = iso.SystemCircuitId,
-                    CircuitNomenclature = iso.CircuitNomenclature,
-                    Tag = iso.Tag,
-                    InstalledByBemsId = iso.InstalledByBemsId,
-                    InstallerDisplayName = installer.FirstName + " " + installer.LastName,
-                    LotoAssociatedId = iso.LotoAssociatedId
+                    Status = Common.Constants.ShieldHttpWrapper.Status.SUCCESS,
+                    Message = $"Signed in {req.PAEName} as an PAE.",
+                    Data = lotoData
                 };
-
-                string jsonItem = JsonConvert.SerializeObject(request);
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Isolation");
-
-                var stringContent = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PostAsync(uri, stringContent, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<LotoIsolationsDiscreteHecp>>(await msg.Content.ReadAsStringAsync());
             }
-            catch (Exception ex)
+            else
             {
-                Console.Error.WriteLine(ex);
-
-                return null;
+                lotoData.UserTrainingData = trainingInfo.MyLearningDataResponse;
+                response = new HTTPResponseWrapper<LotoDetails>
+                {
+                    Status = Common.Constants.ShieldHttpWrapper.Status.NOT_MODIFIED,
+                    Reason = Common.Constants.ShieldHttpWrapper.Reason.TRAINING,
+                    Message = $"{req.PAEName} does not have the required {trainingText} ({trainingCodes}).",
+                    Data = lotoData
+                };
             }
+
+            return response;
         }
 
-        public virtual async Task<Isolation> InstallDiscreteIsolation(InstallIsolationRequest iso, User installer)
+        public virtual async Task<bool> SendEmailToPAEManager(int lotoId, int paeBemsId, int gcBemsId, string reason, string trainingCodes)
         {
-            try
-            {
-                iso.InstallerDisplayName = installer.FirstName + " " + installer.LastName;
-
-                string jsonItem = JsonConvert.SerializeObject(iso);
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Isolation");
-
-                var stringContent = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PutAsync(uri, stringContent, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                return JsonConvert.DeserializeObject<Isolation>(await msg.Content.ReadAsStringAsync());
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-
-                return null;
-            }
+            LotoDetails loto = _lotoDao.GetLotoById(lotoId);
+            Models.Users.User managerDetails = await _userService.GetManagerDetails(paeBemsId);
+            Models.Users.User pae = await _userService.GetUserByBemsId(paeBemsId);
+            Models.Email.EmailRequest emailRequest = new Models.Email.EmailRequest();
+            emailRequest.Subject = $"Mandatory LOTO Training Override for {pae.DisplayName} in Shield {_shield_Environment}";
+            emailRequest.IsHtml = true;
+            emailRequest.Body = $@" <html>
+	                                <head></head>
+                                    {Constants.EmailHeader}
+	                                <body style='font-family:Calibri,sans-serif;'>
+                                        <br />
+										Hi {managerDetails.DisplayName}, 
+										<br />
+                                        <br />
+                                        <b>{pae.DisplayName} </b> claimed the LOTO - <b>{loto.WorkPackage}</b> as PAE in Site {loto.Site}, Program {loto.Model}, Line Number {loto.LineNumber}.
+                                        <br/>
+                                        Training(s) ({trainingCodes}) has been overridden with the reason : <b>{reason}</b>.
+                                        <br />
+                                        <br />
+		                                You are receiving this email because you are the Manager of <b>{pae.DisplayName}</b> and mandatory training has been overridden.
+                                        <br />
+                                        <br />
+                                        ACTION : Please follow up with the employee to complete the incomplete mandatory trainings as mentioned above.
+                                        <br />
+                                        <br />
+                                        <hr />
+		                                {_footer}
+	                                </body>
+                                    </html>";
+            emailRequest.To.Add(managerDetails.EmailAddress);
+            var result = _emailService.SendEmail(emailRequest);
+            return result;
         }
 
-        public virtual async Task<bool> SignOutAE(int lotoId, int aeBemsId, string aeName, int userBemsId, string userName)
+        public virtual LotoDetails Update(LotoDetails loto)
         {
-            var webToken = await _clientService.GetWebToken(Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-            if (webToken)
+            return _lotoDao.Update(loto);
+        }
+
+        public void UpdateHecpIsolationtag(LotoDetails loto)
+        {
+            _lotoDao.UpdateHecpIsolationtag(loto);
+        }
+
+        public virtual bool DeleteLoto(int lotoId)
+        {
+            var loto = GetLotoById(lotoId);
+
+            if (loto is not null)
             {
-                try
-                {
-                    SigningAERequest req = new SigningAERequest()
-                    {
-                        LotoId = lotoId,
-                        AEBemsId = aeBemsId,
-                        AEName = aeName,
-                        UserBemsId = userBemsId,
-                        UserName = userName
-                    };
-
-                    string json = JsonConvert.SerializeObject(req);
-                    StringContent content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                    var lotoUri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/AESignOut");
-                    if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                    {
-                        _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                    }
-                    var msg = await _clientService.GetClient().PutAsync(lotoUri, content);
-
-                    return (int)msg.StatusCode == 200;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine(ex);
-                }
+               return _lotoDao.DeleteLoto(loto);
+              
             }
             return false;
-
         }
 
-        public virtual async Task<bool> SignOutVisitor(int lotoId, int idToDelete, string aeName, int userBemsId, string userName)
+        public virtual LotoDetails SignOutPAE(int LotoId, string displayName, int bemsId)
         {
-            var webToken = await _clientService.GetWebToken(Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-            if (webToken)
-            {
-                try
-                {
-                    SigningAERequest req = new SigningAERequest()
-                    {
-                        LotoId = lotoId,
-                        AEBemsId = idToDelete,
-                        AEName = aeName,
-                        UserBemsId = userBemsId,
-                        UserName = userName
-                    };
+            LotoDetails loto = GetLotoById(LotoId);
+            loto.AssignedPAEBems = null;
+            loto.PAESignInTime = null;
+            LotoDetails res = Update(loto);
 
-                    string json = JsonConvert.SerializeObject(req);
-                    var lotoUri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/VisitorSignOut");
-
-                    StringContent content = new StringContent(json, Encoding.UTF8, "application/json");
-                    if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                    {
-                        _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                    }
-                    var msg = await _clientService.GetClient().PutAsync(lotoUri, content);
-
-                    return (int)msg.StatusCode == 200;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine(ex);
-                }
-            }
-            return false;
-
+            _lotoTransactionService.AddTransaction(LotoId, $"{displayName} ({bemsId}) signed out as PAE");
+            return res;
         }
 
-        public virtual async Task<Models.LotoModels.Loto> UninstallIsolationsAndCompleteLoto(int lotoId, int removeByBemsId, string removeByName)
+        public virtual LotoDetails GetLotoById(int id)
         {
-            try
-            {
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Status/Complete");
+            LotoDetails loto = _lotoDao.GetLotoById(id);
+            loto.Discrete = loto.Discrete == null ? null : _discreteDao.GetDiscreteById(loto.Discrete.Id);
 
-                StatusChangeRequest requestObject = new StatusChangeRequest()
+            return loto;
+        }
+
+        public virtual async Task<HTTPResponseWrapper<LotoAE>> SignInAE(SigningAERequest request)
+        {
+            HTTPResponseWrapper<LotoAE> response;
+            LotoDetails loto = _lotoDao.GetLotoById(request.LotoId);
+            LotoDetails lotoAESignedInto = _lotoDao.LotoAESignedInto(request);
+
+            if (lotoAESignedInto == null)
+            {
+                LotoAE ae = new LotoAE
                 {
-                    Id = lotoId,
-                    BemsId = removeByBemsId,
-                    DisplayName = removeByName
+                    AEBemsId = request.AEBemsId,
+                    LotoId = request.LotoId,
+                    SignInTime = DateTime.UtcNow
                 };
 
-                StringContent content = new StringContent(JsonConvert.SerializeObject(requestObject), Encoding.UTF8, "application/json");
+                List<string> courseCodeList = new List<string>
+                        {
+                            TrainingCourses.ANNUAL_REQUIRED_LOTO_FIELD_OBSERVATION_TRAINING,
+                            TrainingCourses.AIRCRAFT_HAZARDOUS_ENERGY_CONTROL
+                        };
+                TrainingInfo trainingInfo = await _myLearningDataService.GetMyLearningDataAsync(ae.AEBemsId, courseCodeList);
 
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
+                var invalidTrainings = trainingInfo.MyLearningDataResponse.Where(x => !x.IsTrainingValid).Select(x => x.CertCode).ToList();
 
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
+                bool isAllTrainingValid = !invalidTrainings.Any();
+                string trainingText = invalidTrainings.Count > 1 ? "trainings" : "training";
+                string trainingCodes = string.Join(", ", invalidTrainings);
+
+                if (request.OverrideTraining || isAllTrainingValid)
                 {
-                    return JsonConvert.DeserializeObject<Models.LotoModels.Loto>(await res.Content.ReadAsStringAsync());
+                    var result = _lotoDao.SignInAE(ae);
+                    Update(result.Loto);
+
+                    var transactionString = $"{request.UserName} ({request.UserBemsId}) signed in {request.AEName} ({request.AEBemsId}) as an AE";
+                    if(request.OverrideTraining)
+                    {
+                        transactionString = $"{request.UserName} ({request.UserBemsId}) signed in {request.AEName} ({request.AEBemsId}) as an AE. Training ({trainingCodes}) was overriden by ({request.UserName})  because :: {request.ReasonToOverrideTriaining} ";
+                    }
+                    _lotoTransactionService.AddTransaction(result.LotoId, transactionString);
+
+                    response = new HTTPResponseWrapper<LotoAE>
+                    {
+                        Status = Common.Constants.ShieldHttpWrapper.Status.SUCCESS,
+                        Message = $"Signed in {request.AEName} as an AE.",
+                        Data = result
+                    };
                 }
                 else
                 {
-                    return null;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("Error in Uninstall Isolations " + ex);
-                return null;
-            }
-        }
-
-        #region status change
-
-        public virtual async Task<bool> Lockout(StatusChangeRequest request)
-        {
-
-            try
-            {
-                string jsonLotoId = JsonConvert.SerializeObject(request);
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Status/Lockout");
-
-                StringContent content = new StringContent(jsonLotoId, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-
-                return false;
-            }
-
-            return false;
-        }
-
-        public virtual async Task<bool> Transfer(StatusChangeRequest changeRequest)
-        {
-            try
-            {
-                string jsonRequest = JsonConvert.SerializeObject(changeRequest);
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Status/Transfer");
-
-                StringContent content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("Error in Transfer service" + ex);
-
-                return false;
-            }
-
-            return false;
-        }
-
-        #endregion status change
-
-        public virtual async Task<List<Models.LotoModels.Loto>> GetAllInProgressLotosWithIsolations(string program, string lineNumber)
-        {
-
-            List<Models.LotoModels.Loto> lotos = new List<Models.LotoModels.Loto>();
-
-            try
-            {
-
-                Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/" + $"ActiveIsolations/Program/{program}/LineNumber/{lineNumber}");
-
-                HttpResponseMessage res = await _clientService.GetClient().GetAsync(uri);
-
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    string str = await res.Content.ReadAsStringAsync();
-                    lotos = JsonConvert.DeserializeObject<List<Models.LotoModels.Loto>>(str);
-                }
-
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("Error getting active isolations " + ex);
-
-                return new List<Models.LotoModels.Loto>();
-            }
-
-            return lotos;
-        }
-
-        public virtual async Task<Dictionary<int, int>> AirplaneLotoCount(List<Shield.Ui.App.Models.CommonModels.Aircraft> aircraft)
-        {
-            Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/AirplaneLotoCount");
-
-            IHttpClient client = _clientService.GetClient();
-            var content = new StringContent(JsonConvert.SerializeObject(aircraft), Encoding.UTF8, "application/json");
-            if (client.DefaultRequestHeaders != null && !client.DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-            {
-                client.DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-            }
-            var response = await client.PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-            var responseString = await response.Content.ReadAsStringAsync();
-
-            if (response.StatusCode == System.Net.HttpStatusCode.OK)
-            {
-                // Dictionary<Airplane Id, Loto Count>
-                Dictionary<int, int> dictAirplaneToLotoCount = JsonConvert.DeserializeObject<Dictionary<int, int>>(responseString);
-                return dictAirplaneToLotoCount;
-            }
-
-            throw new Exception(responseString);
-        }
-
-        public virtual async Task<HTTPResponseWrapper<Isolation>> UnlockIsolation(int isoId)
-        {
-            var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Isolation/IsolationUnlock/IsolationId/" + isoId);
-            string jsonItem = JsonConvert.SerializeObject(new { id = isoId });
-
-            StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-            if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-            {
-                _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-            }
-            var response = await _clientService.GetClient().PutAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-            string responseString = await response.Content.ReadAsStringAsync();
-
-            return JsonConvert.DeserializeObject<HTTPResponseWrapper<Isolation>>(responseString);
-        }
-
-        public virtual async Task<PagingWrapper<Hecp>> GetPublishedHecpsForLoto(string site, string program, string title, string ata, List<int> minorModelIdList,int pageNumber, bool? isEngineered = null)
-        {
-            StringBuilder sb = new StringBuilder();
-            if (minorModelIdList.Count > 0)
-            {
-                foreach (int id in minorModelIdList)
-                {
-                    sb.Append("&minorModelIdList=" + id.ToString());
+                    response = new HTTPResponseWrapper<LotoAE>
+                    {
+                        Status = Common.Constants.ShieldHttpWrapper.Status.NOT_MODIFIED,
+                        Reason = Common.Constants.ShieldHttpWrapper.Reason.TRAINING,
+                        Message = $"{request.AEName} does not have the required {trainingText} ({trainingCodes}).",
+                        Data = new LotoAE
+                        {
+                            AEBemsId = request.AEBemsId,
+                            LotoId = request.LotoId,
+                            UserTrainingData = trainingInfo.MyLearningDataResponse
+                        }
+                    };
                 }
             }
             else
             {
-                sb.Append("&minorModelIdList=null");
-            }
-            Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + $"Hecp/GetPublishedHecpForLoto?Site=" + site + "&Program=" + program + "&hecpTitle=" + title + "&Ata=" + ata + sb.ToString() +"&pageNumber=" +pageNumber + "&isEngineered=" + isEngineered);
-
-            HttpResponseMessage res = await _clientService.GetClient().GetAsync(uri);
-
-            if (res.StatusCode == System.Net.HttpStatusCode.OK)
-            {
-                string strResponse = await res.Content.ReadAsStringAsync();
-
-                if (!String.IsNullOrEmpty(strResponse))
+                response = new HTTPResponseWrapper<LotoAE>
                 {
-                    try
-                    {
-                        HTTPResponseWrapper<PagingWrapper<Hecp>> hecpList = JsonConvert.DeserializeObject<HTTPResponseWrapper<PagingWrapper<Hecp>>>(strResponse);
-                        return hecpList.Data;
-                    }
-                    catch (Exception e)
-                    {
-                        Console.Error.WriteLine(e);
-                        return null;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        public virtual async Task<List<HecpIsolationTag>> GetHecpIsolationTagsForLoto(GetIsolationtagRequest request)
-        {
-            var hecpIsolationTags = new List<HecpIsolationTag>();
-            string jsonItem = JsonConvert.SerializeObject(request);
-            Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + $"Hecp/GetIsolationTags");
-            if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-            {
-                _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-            }
-            StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-            var res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-            if (res.StatusCode == System.Net.HttpStatusCode.OK)
-            {
-                string strResponse = await res.Content.ReadAsStringAsync();
-                hecpIsolationTags = JsonConvert.DeserializeObject<List<HecpIsolationTag>>(strResponse);
-                if (hecpIsolationTags.Count > 0)
-                {
-                    List<int> existingIsolationTagHecpIds = hecpIsolationTags.Select(i => i.HecpId).Distinct().ToList();
-                    request.HecpIds.RemoveAll(x => existingIsolationTagHecpIds.Contains(x));
-                    jsonItem = JsonConvert.SerializeObject(request);
-                }
-
-                uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Hecp/" + $"GetDeactivationStepIsolations");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    strResponse = await res.Content.ReadAsStringAsync();
-                    if (!String.IsNullOrEmpty(strResponse))
-                    {
-                        string location = string.Empty;
-
-                        var isolationList = JsonConvert.DeserializeObject<List<HECPIsolation>>(strResponse);
-
-                        if (isolationList != null && isolationList.Count > 0)
-                        {
-                            foreach (var iso in isolationList)
-                            {
-                                location = (!string.IsNullOrWhiteSpace(iso.CircuitDetails.Column) && !string.IsNullOrWhiteSpace(iso.CircuitDetails.Row)) ? iso.CircuitDetails.Row + "-" + iso.CircuitDetails.Column
-                                            : (string.IsNullOrWhiteSpace(iso.CircuitDetails.Row) && !string.IsNullOrWhiteSpace(iso.CircuitDetails.Column)) ? iso.CircuitDetails.Column
-                                            : (string.IsNullOrWhiteSpace(iso.CircuitDetails.Column) && !string.IsNullOrWhiteSpace(iso.CircuitDetails.Row)) ? iso.CircuitDetails.Row : string.Empty;
-                                hecpIsolationTags.Add(
-                                new HecpIsolationTag
-                                {
-                                    HecpIsolationId = iso.Id,
-                                    CircuitId = iso.CircuitDetails.CircuitId,
-                                    CircuitName = iso.CircuitDetails.CircuitNomenclature,
-                                    CircuitPanel = iso.CircuitDetails.Panel,
-                                    CircuitLocation = location,
-                                    State = iso.State,
-                                    HecpId = iso.HecpId,
-                                    HecpIsolationAssociatedModelDataList = iso.HecpIsolationAssociatedModelDataList
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            return hecpIsolationTags;
-        }
-
-        public virtual async Task<List<ViewModels.ConflictIsolationViewModel>> GetConflictIsolation(int lotoId, string program, List<int> hecpIds, string lineNumber)
-        {
-            List<ViewModels.ConflictIsolationViewModel> conflictIsolations = new List<ViewModels.ConflictIsolationViewModel>();
-            try
-            {
-                string jsonItem = JsonConvert.SerializeObject(hecpIds);
-                Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/" + $"ConflictIsolations/LotoId/{lotoId}/program/{program}/lineNumber/{lineNumber}");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
-                {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                HttpResponseMessage res = await _clientService.GetClient().PostAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
-
-                if (res.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    List<HecpIsolationTag> hecpIsolations = new List<HecpIsolationTag>();
-                    string resultString = await res.Content.ReadAsStringAsync();
-                    hecpIsolations = JsonConvert.DeserializeObject<List<HecpIsolationTag>>(resultString);
-                    foreach (var iso in hecpIsolations)
-                    {
-                        conflictIsolations.Add(
-                        new ViewModels.ConflictIsolationViewModel
-                        {
-                            CircuitId = iso.CircuitId,
-                            CircuitName = iso.CircuitName,
-                            CircuitPanel = iso.CircuitPanel,
-                            ConflictLotoName = iso.CircuitLocation,
-                            ConflictLotoId = iso.LotoId,
-                            State = iso.State
-                        });
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("Error getting conflicted isolations " + ex);
-                return new List<ViewModels.ConflictIsolationViewModel>();
-            }
-            return conflictIsolations;
-        }
-
-        public virtual async Task<HTTPResponseWrapper<bool>> IsHecpDeletable(int hecpId)
-        {
-            try
-            {
-                Uri uri = new Uri(EnvironmentHelper.LotoServiceAddress + $"Loto/IsHecpDeletable/HecpId/{hecpId}");
-                HttpResponseMessage result = await _clientService.GetClient().GetAsync(uri);
-                return JsonConvert.DeserializeObject<HTTPResponseWrapper<bool>>(await result.Content.ReadAsStringAsync());
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(ex);
-                return new HTTPResponseWrapper<bool>
-                {
-                    Data = false,
-                    Message = ex.Message,
-                    Status = Shield.Common.Constants.ShieldHttpWrapper.Status.FAILED
+                    Status = Common.Constants.ShieldHttpWrapper.Status.NOT_MODIFIED,
+                    Reason = Common.Constants.ShieldHttpWrapper.Reason.ALREADY_EXISTS,
+                    Message = $"{request.AEName} cannot sign into this LOTO because they are signed into a LOTO on {lotoAESignedInto.Model} Line #{lotoAESignedInto.LineNumber}",
+                    Data = null
                 };
             }
+
+            return response;
         }
 
-        public virtual async Task<HTTPResponseWrapper<Models.LotoModels.Loto>> UpdateLotoJobInfo(Models.CommonModels.CreateLotoRequest lotoJobInfo)
+        public virtual async Task<HTTPResponseWrapper<LotoAE>> SignInVisitor(SigningAERequest request)
         {
-            try
+            HTTPResponseWrapper<LotoAE> response;
+
+            LotoAE lotoVisitorSignedInto = _lotoDao.LotoVisitorSignedInto(request);
+
+            if (lotoVisitorSignedInto == null)
             {
-                string jsonItem = JsonConvert.SerializeObject(lotoJobInfo);
-
-                var uri = new Uri(EnvironmentHelper.LotoServiceAddress + "Loto/UpdateJobInfo");
-
-                StringContent content = new StringContent(jsonItem, Encoding.UTF8, "application/json");
-                if (_clientService.GetClient().DefaultRequestHeaders != null && !_clientService.GetClient().DefaultRequestHeaders.Contains(Constants.LotoApiKeyHeaderName))
+                LotoAE ae = new LotoAE()
                 {
-                    _clientService.GetClient().DefaultRequestHeaders.Add(Constants.LotoApiKeyHeaderName, Constants.LotoServiceAPIKey);
-                }
-                var msg = await _clientService.GetClient().PutAsync(uri, content, Constants.LotoServiceAPIKey, APISystems.LotoAPI);
+                    AEBemsId = request.AEBemsId,
+                    LotoId = request.LotoId,
+                    SignInTime = DateTime.UtcNow,
+                    FullName = request.AEName
+                };
 
-                HTTPResponseWrapper<Models.LotoModels.Loto> response = JsonConvert.DeserializeObject<HTTPResponseWrapper<Models.LotoModels.Loto>>(await msg.Content.ReadAsStringAsync());
+                var result = _lotoDao.SignInVisitor(ae);
+                //Update(result.Loto);
 
-                return response;
+                _lotoTransactionService.AddTransaction(result.LotoId, $"{request.UserName} ({request.UserBemsId}) signed in {request.AEName} as a Non Boeing Visitor AE");
+
+                response = new HTTPResponseWrapper<LotoAE>()
+                {
+                    Status = Common.Constants.ShieldHttpWrapper.Status.SUCCESS,
+                    Message = $"Signed in {request.AEName} as a Visitor.",
+                    Data = result
+                };
+
             }
-            catch (Exception ex)
+            else
             {
-                Console.Error.WriteLine(ex);
-                return null;
+                response = new HTTPResponseWrapper<LotoAE>()
+                {
+                    Status = Common.Constants.ShieldHttpWrapper.Status.NOT_MODIFIED,
+                    Reason = Common.Constants.ShieldHttpWrapper.Reason.ALREADY_EXISTS,
+                    Message = $"{request.AEName} cannot sign into this LOTO because they are signed into another LOTO",
+                    Data = null
+                };
             }
+
+            return response;
         }
+
+        public virtual List<LotoAE> GetAEsByLotoId(int lotoId)
+        {
+            return _lotoDao.GetAEsByLotoId(lotoId);
+        }
+
+        public virtual Models.Common.Status GetStatusByDescription(string description)
+        {
+            return _statusDao.GetStatusByDescription(description);
+        }
+
+        public virtual Models.Common.Status GetStatusById(int id)
+        {
+            return _statusDao.GetStatusById(id);
+        }
+
+        public virtual List<LotoAE> SignOutAE(int lotoId, int aeBemsId, string aeName, int userBemsId, string userName)
+        {
+            _lotoDao.SignOutAE(lotoId, aeBemsId);
+
+            LotoDetails lotoToUpdate = GetLotoById(lotoId);
+
+            if (lotoToUpdate != null)
+            {
+                Update(lotoToUpdate);
+            }
+
+            // AE signed themselves out
+            if (aeBemsId == userBemsId)
+            {
+                _lotoTransactionService.AddTransaction(lotoId, $"{aeName} ({aeBemsId}) signed out as an AE");
+            }
+            // Manager signed out the AE
+            else
+            {
+                _lotoTransactionService.AddTransaction(lotoId, $"{userName} ({userBemsId}) signed out {aeName} ({aeBemsId}) as an AE");
+            }
+
+            return _lotoDao.GetAEsByLotoId(lotoId);
+        }
+
+        public virtual List<LotoAE> SignOutVisitor(int lotoId, int id, string aeName, int userBemsId, string userName)
+        {
+            _lotoDao.SignOutVisitor(id);
+
+            LotoDetails lotoToUpdate = GetLotoById(lotoId);
+
+            if (lotoToUpdate != null)
+            {
+                Update(lotoToUpdate);
+            }
+
+            // Manager or GC signed out the Non Boeing nAE
+            _lotoTransactionService.AddTransaction(lotoId, $"{userName} ({userBemsId}) signed out {aeName} as a Non Boeing AE");
+
+
+            return _lotoDao.GetAEsByLotoId(lotoId);
+        }
+
+        /// <summary>
+        /// The get airplane loto counts.
+        /// </summary>
+        /// <param name="aircraftList">
+        /// The aircraft list.
+        /// </param>
+        /// <returns>
+        /// The <see cref="Dictionary"/>.
+        /// </returns>
+        public virtual Dictionary<int, int> GetAirplaneLotoCounts(List<Shield.Services.Loto.Models.Common.Aircraft> aircraftList)
+        {
+            // Dictionary<Airplane Id, Loto Count>
+            var returnDict = new Dictionary<int, int>();
+
+            var modelList = aircraftList.Select(m => m.Model).ToList();
+            var lineNumberList = aircraftList.Select(m => m.LineNumber).ToList();
+
+            var lotos = _lotoDao.GetActiveLotosForAircrafts(modelList, lineNumberList);
+            
+            foreach (var aircraft in aircraftList)
+            {
+                var lotosForLineNumber = lotos.Where(loto => loto.LineNumber == aircraft.LineNumber).ToList();
+                returnDict.Add(aircraft.Id, lotosForLineNumber.Count);
+            }
+            
+            return returnDict;
+        }
+
+        public virtual List<LotoDetails> GetLotosWithActiveIsolationsByProgramAndLine(string program, string lineNumber)
+        {
+            return _lotoDao
+                .GetIsolationsForLotos(program, lineNumber)
+                .Where(loto => loto.Status.Description.ToLower() == "active" || loto.Status.Description.ToLower() == "transfer")
+                .ToList();
+        }
+
+        private Discrete AssignedToLoto(Shield.Common.Models.Loto.StatusChangeRequest request)
+        {
+            Discrete discrete = _discreteService.GetDiscreteById(request.Id);
+
+            if (discrete != null)
+            {
+                discrete.Status = GetStatusByDescription(Shield.Common.Constants.Status.ASSIGNED_TO_LOTO_DESCRIPTION);
+                discrete = _discreteService.Update(discrete);
+            }
+
+            return discrete;
+        }
+
+        public virtual List<Shield.Services.Loto.Models.Hecp.HecpIsolationTag> GetConflictIsolations(int lotoId, string program, List<int> hecpIds, string lineNumber)
+        {
+            return _lotoDao.GetConflictIsolations(lotoId, program, hecpIds, lineNumber);
+        }
+
+        public virtual bool IsHecpDeletable(int hecpId)
+        {
+            return _lotoDao.IsHecpDeletable(hecpId);
+        }
+
+        public virtual LotoDetails UpdateLotoJobInfo(Models.Common.CreateLotoRequest lotoJobInfo)
+        {
+            _lotoTransactionService.AddTransaction(lotoJobInfo.LotoId, $"{lotoJobInfo.CreatedByName} ({lotoJobInfo.CreatedByBemsId}) Updated Work Package to: {lotoJobInfo.WorkPackage} and  Reason to: {lotoJobInfo.Reason}");
+
+            return _lotoDao.UpdateLotoJobInfo(lotoJobInfo);
+        }
+
     }
 }
