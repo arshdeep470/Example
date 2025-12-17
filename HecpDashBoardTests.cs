@@ -1739,3 +1739,181 @@ namespace Shield.Ui.App.Tests.Views.HECP
         }
     }
 }
+
+
+
+[TestMethod]
+public async Task Should_Display_SameLotoWarningMessage_When_AEIsAlreadySignedIntoSameLoto()
+{
+    // Arrange
+    int lotoId = 11;
+    int bemsId = 2732768;
+    string aeName = "John Doe";
+
+    var lotoDetail = new LotoDetails
+    {
+        Model = "747",
+        LineNumber = "Line-1234",
+        WorkPackage = "WP-456",
+        Site = "BDS Puget Sound"
+    };
+
+    _mockLotoService.Setup(s => s.GetLotoDetail(lotoId)).ReturnsAsync(lotoDetail);
+
+    // Act
+    HttpResponseMessage response = await httpClient.GetAsync($"Loto/GetAEWarningPartial?otherLotoId={lotoId}&lotoId={lotoId}&bemsId={bemsId}&aeName={aeName}");
+
+    // Assert
+    string output = await response.Content.ReadAsStringAsync();
+    IHtmlDocument htmlDocument = parser.ParseDocument(output);
+
+    IElement warningCard = htmlDocument.QuerySelector(".ae-warning-card");
+    Assert.IsNotNull(warningCard);
+    Assert.IsTrue(warningCard.ClassList.Contains("card"));
+
+    IElement cardTitle = warningCard.QuerySelector(".card-title");
+    Assert.IsNotNull(cardTitle);
+    Assert.AreEqual("Warning", cardTitle.TextContent.Trim());
+
+    string warningText = warningCard.QuerySelector("p").TextContent.Trim();
+    Assert.IsTrue(warningText.Contains("John Doe is already signed into this LOTO"));
+}
+
+[TestMethod]
+public async Task Should_Display_DifferentLotoWarningMessage_When_AEIsSignedIntoDifferentLoto()
+{
+    // Arrange
+    int otherLotoId = 5;
+    int lotoId = 11;
+    int bemsId = 2732768;
+    string aeName = "John Doe";
+
+    var lotoDetail = new LotoDetails
+    {
+        Model = "747",
+        LineNumber = "Line-1234",
+        WorkPackage = "WP-456",
+        Site = "BDS Puget Sound"
+    };
+
+    _mockLotoService.Setup(s => s.GetLotoDetail(lotoId)).ReturnsAsync(lotoDetail);
+
+    // Act
+    HttpResponseMessage response = await httpClient.GetAsync($"Loto/GetAEWarningPartial?otherLotoId={otherLotoId}&lotoId={lotoId}&bemsId={bemsId}&aeName={aeName}");
+
+    // Assert
+    string output = await response.Content.ReadAsStringAsync();
+    IHtmlDocument htmlDocument = parser.ParseDocument(output);
+
+    IElement warningCard = htmlDocument.QuerySelector(".ae-warning-card");
+    Assert.IsNotNull(warningCard);
+    Assert.IsTrue(warningCard.ClassList.Contains("card"));
+
+    IElement cardTitle = warningCard.QuerySelector(".card-title");
+    Assert.IsNotNull(cardTitle);
+    Assert.AreEqual("Warning", cardTitle.TextContent.Trim());
+
+    IElement paragraph = warningCard.QuerySelector("p");
+    string warningText = paragraph.TextContent.Trim();
+
+    Assert.IsTrue(warningText.Contains("John Doe is already signed in the LOTO"));
+    Assert.IsTrue(warningText.Contains("WP-456"));
+    Assert.IsTrue(warningText.Contains("747"));
+    Assert.IsTrue(warningText.Contains("Line-1234"));
+    Assert.IsTrue(warningText.Contains("BDS Puget Sound"));
+
+    IElement link = paragraph.QuerySelector("a");
+    Assert.IsNotNull(link);
+    Assert.AreEqual($"/Loto/LotoDetail?id={lotoId}", link.GetAttribute("href"));
+}
+
+
+
+[TestMethod]
+public async Task Should_Display_SameLotoWarningMessage_When_AEIsAlreadySignedIntoSameLoto()
+{
+    // Arrange
+    int lotoId = 11;
+    int bemsId = 2732768;
+    string aeName = "John Doe";
+
+    var lotoDetail = new LotoDetails
+    {
+        Model = "747",
+        LineNumber = "Line-1234",
+        WorkPackage = "WP-456",
+        Site = "BDS Puget Sound"
+    };
+
+    _mockLotoService.Setup(s => s.GetLotoDetail(lotoId)).ReturnsAsync(lotoDetail);
+
+    // Act
+    HttpResponseMessage response = await httpClient.GetAsync($"Loto/GetAEWarningPartial?otherLotoId={lotoId}&lotoId={lotoId}&bemsId={bemsId}&aeName={aeName}");
+
+    // Assert
+    string output = await response.Content.ReadAsStringAsync();
+    IHtmlDocument htmlDocument = parser.ParseDocument(output);
+
+    IHtmlCollection<IElement> warningCards = htmlDocument.GetElementsByClassName("ae-warning-card");
+    Assert.AreEqual(1, warningCards.Length);
+    
+    IElement warningCard = warningCards[0];
+    IHtmlCollection<IElement> cardTitles = warningCard.GetElementsByClassName("card-title");
+    Assert.AreEqual(1, cardTitles.Length);
+    Assert.AreEqual("Warning", cardTitles[0].TextContent.Trim());
+
+    IHtmlCollection<IElement> paragraphs = warningCard.GetElementsByTagName("p");
+    Assert.AreEqual(1, paragraphs.Length);
+    
+    string warningText = paragraphs[0].TextContent.Trim();
+    Assert.IsTrue(warningText.Contains("John Doe is already signed into this LOTO"));
+}
+
+[TestMethod]
+public async Task Should_Display_DifferentLotoWarningMessage_When_AEIsSignedIntoDifferentLoto()
+{
+    // Arrange
+    int otherLotoId = 5;
+    int lotoId = 11;
+    int bemsId = 2732768;
+    string aeName = "John Doe";
+
+    var lotoDetail = new LotoDetails
+    {
+        Model = "747",
+        LineNumber = "Line-1234",
+        WorkPackage = "WP-456",
+        Site = "BDS Puget Sound"
+    };
+
+    _mockLotoService.Setup(s => s.GetLotoDetail(lotoId)).ReturnsAsync(lotoDetail);
+
+    // Act
+    HttpResponseMessage response = await httpClient.GetAsync($"Loto/GetAEWarningPartial?otherLotoId={otherLotoId}&lotoId={lotoId}&bemsId={bemsId}&aeName={aeName}");
+
+    // Assert
+    string output = await response.Content.ReadAsStringAsync();
+    IHtmlDocument htmlDocument = parser.ParseDocument(output);
+
+    IHtmlCollection<IElement> warningCards = htmlDocument.GetElementsByClassName("ae-warning-card");
+    Assert.AreEqual(1, warningCards.Length);
+    
+    IElement warningCard = warningCards[0];
+    IHtmlCollection<IElement> cardTitles = warningCard.GetElementsByClassName("card-title");
+    Assert.AreEqual(1, cardTitles.Length);
+    Assert.AreEqual("Warning", cardTitles[0].TextContent.Trim());
+
+    IHtmlCollection<IElement> paragraphs = warningCard.GetElementsByTagName("p");
+    Assert.AreEqual(1, paragraphs.Length);
+    
+    string warningText = paragraphs[0].TextContent.Trim();
+    Assert.IsTrue(warningText.Contains("John Doe is already signed in the LOTO"));
+    Assert.IsTrue(warningText.Contains("WP-456"));
+    Assert.IsTrue(warningText.Contains("747"));
+    Assert.IsTrue(warningText.Contains("Line-1234"));
+    Assert.IsTrue(warningText.Contains("BDS Puget Sound"));
+
+    IHtmlCollection<IElement> links = paragraphs[0].GetElementsByTagName("a");
+    Assert.AreEqual(1, links.Length);
+    Assert.AreEqual($"/Loto/LotoDetail?id={lotoId}", links[0].GetAttribute("href"));
+}
