@@ -1,0 +1,271 @@
+@using Ganss.Xss
+@using Shield.Ui.App.Models.CommonModels
+@using Shield.Ui.App.Authorization
+@using Shield.Ui.App.Common
+@using Newtonsoft.Json
+@model Shield.Ui.App.ViewModels.HecpDashboardViewModel
+@{
+    bool canCreateDiscrete = Model.SessionService.GetUserFromSession(Context).BemsId > 0;
+
+    bool canCreateOrSignDiscrete = canCreateDiscrete || PermissionHandler.HasPermission(Model.SessionService.GetUserFromSession(Context).Permissions, Shield.Common.Constants.Permission.SIGN_DISCRETE);
+    Helpers._viewDetails = false;
+    Helpers._publishedHecpView = false;
+
+    User currentUser = Model.SessionService.GetUserFromSession(Context);
+    string userRole = Model.SessionService.GetUserFromSession(Context).Role.Name.ToString().ToUpper();
+    int userRoleId = Model.SessionService.GetUserFromSession(Context).Role.Id;
+    int userBemsId = Model.SessionService.GetUserFromSession(Context).BemsId;
+    bool isITARUser = (currentUser.IsITAR ?? false) && currentUser.HasAccessToRestrictedPrograms(Model.Program);
+    var sanitizer = new HtmlSanitizer();
+    var isPublished = Model.isPublishedList;
+}
+
+<input id="inputDeleteHecpId" type="hidden" value="" />
+<input id="inputDeleteHecpName" type="hidden" value="" />
+<input id="inputEditHecpId" type="hidden" value="" />
+<input id="inputTargetStep" type="hidden" value="" />
+<section class="view intro-2 hm-stylish-strong">
+    <div class="full-bg-img">
+        <div >
+            <div class="row card hecpList" style="margin-left:0px">
+                <div id="discrete-card-header" class="discrete-card-header card-header card-header-lg col-md-12 ">
+                    <h4 class="black-text float-left top-bottom-space-center">HECP -  <i class="fa fa-plane"></i>&nbsp;@Model.Program</h4>
+                    @if (canCreateDiscrete)
+                    {
+                        <div class="float-right">
+                            <a id="btnCreateHecp" asp-action="CreateHecp" asp-controller="Hecp" asp-route-site="@sanitizer.Sanitize(Model.Site)" asp-route-program="@sanitizer.Sanitize(Model.Program)" class="btn btn-rounded btn-primary float-right">
+                                <i class="fa fa-plus prefix fa-discrete"></i>
+                                CREATE HECP
+                            </a>
+                        </div>
+                    }
+                </div>
+
+                <div class="instruction-container outer-card-body">
+                    <div class="col-xs-12 col-md-12 job-info-border pt-2 bordered-box" style="width:auto;margin:1rem;">
+                        <b>Instructions:</b>
+                        <br />
+                        <ul id="instructions-ul">
+                            <li id="published-inst">Click on the (<i class="fa fa-eye"></i>) to view the published version of the HECP.<br /></li>
+                            <li style="margin-top:10px"><img class="img-responsive" id="engineered-hecp" style=" width:30px ;height:25px;float:left" alt="Eng" src="/images/engineeredHecp.png"> This icon indicates an Engineered HECP.</li>
+                        </ul>
+                    </div>
+                </div>
+                <div id="hecp-tabs">
+                    <ul class="nav outer-card-body" role="tablist">
+                        <li class="hecp-tab">
+                            <a class="nav-link hecp-tab-link @(isPublished ? "active" : "")" style="font-size:medium;" id="published-tab" data-toggle="tab" href="#published" role="tab" aria-controls="published" aria-selected="true" onclick="FilteredHecpDataTab(1,true)">PUBLISHED</a>
+                        </li>
+                        <li class="hecp-tab">
+                            <a class="nav-link hecp-tab-link @(!isPublished ? "active" : "")" style="font-size:medium;" id="draft-tab" data-toggle="tab" href="#draft" role="tab" aria-controls="draft" aria-selected="false" onclick="FilteredHecpDataTab(1,false)">IN-WORK</a>
+                        </li>
+                    </ul>
+                    <div>
+                        <div class="tab-content" id="nav-tabContent">
+                            <div class="tab-pane fade @(isPublished ? "show active" : "")" id="published" role="tabpanel" aria-labelledby="published" style="border-top-left-radius: 0;">
+                                <div id="published-partial" >
+                                    @await Html.PartialAsync("Partials/HecpTabPublishedPartial", @Model)
+                                </div>
+                            </div>
+                            <div class="tab-pane fade @(!isPublished ? "show active" : "")" id="draft" role="tabpanel" aria-labelledby="sign-in-visitor-tab" style="border-top-left-radius: 0;">
+                                <div id="draft-partial">
+                                    @await Html.PartialAsync("Partials/HecpTabDraftPartial", @Model)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                @* <div class="hecp-filter"> *@
+                @*     @await Html.PartialAsync("Partials/HecpFilterPartial", @Model) *@
+                @* </div> *@
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="deleteHecpModal" tabindex="-1" role="dialog" aria-labelledby="deleteHecpModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Delete HECP</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="deleteHecpModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblDeleteHecpConfirmation" class="select-line-label font-weight-normal mb-3"></label>
+                    </div>
+
+                    <div class="modal-footer" id="manageLinesAction">
+                        <button type="button" class="btn btn-secondary-gray btn-rounded black-text" value="Cancel" data-dismiss="modal">
+                            <i class="fa fa-times prefix" style="padding-right:.4rem; color:black !important; margin-top:-.19rem;"></i>
+                            Cancel
+                        </button>
+                        <button id="deleteHecpSubmit" type="button" class="btn btn-primary btn-rounded float-right" onclick="deleteHecp()">OK</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="hecpTaggedToLotoModal" tabindex="-1" role="dialog" aria-labelledby="hecpTaggedToLotoModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Delete HECP</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="hecpTaggedToLotoModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblHecpTaggedToLoto" class="select-line-label grey-text font-weight-normal"></label>
+                    </div>
+
+                    <div class="modal-footer" id="manageLinesAction">
+                        <button type="button" class="btn btn-primary btn-rounded float-right" value="Cancel" data-dismiss="modal">
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="hecpDeletedModal" tabindex="-1" role="dialog" aria-labelledby="hecpDeletedModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Delete HECP</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close" onclick="location.reload();">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="hecpDeletedModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblHecpDeleted" class="select-line-label grey-text font-weight-normal"></label><br/>
+                    </div>
+
+                    <div class="modal-footer" id="manageLinesAction">
+                        <button type="button" class="btn btn-primary btn-rounded float-right" value="Cancel" onclick="location.reload();">
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="editHecpModal" tabindex="-1" role="dialog" aria-labelledby="editHecpModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Edit HECP confirmation</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="editHecpModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblEditHecpConfirmation" class="select-line-label font-weight-normal">
+                            <ul style="padding-left: 1.2rem; margin: 0;">
+                                <li style="margin-bottom: 0.8rem;">Editing this HECP creates a new revision which will be in draft state.</li>
+                                <li style="margin-bottom: 0.8rem;">You will be the author of the new revision.</li>
+                                <li style="margin-bottom: 0.8rem;">The revision must be reviewed and published to be available in LOTO.</li>
+                            </ul>
+                        </label>
+                    </div>
+
+                    <div class="modal-footer" id="manageLinesAction">
+                        <button type="button" class="btn btn-secondary-gray btn-rounded black-text" value="Cancel" data-dismiss="modal">
+                            <i class="fa fa-times prefix" style="padding-right:.4rem; color:black !important; margin-top:-.19rem;"></i>
+                            Cancel
+                        </button>
+                        <button id="editHecpSubmit" type="button" class="btn btn-primary btn-rounded float-right" onclick="proceedToEditAfterWarning();">EDIT HECP</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="editInWorkHecpModal" tabindex="-1" role="dialog" aria-labelledby="editInWorkHecpModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Edit HECP confirmation</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="editInWorkHecpModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblEditInWorkHecpConfirmation" class="select-line-label font-weight-normal">
+                            Editing this HECP will make you the author of this revision.<br>
+                            <div id="currentAuthorContainer" class="currentAuthorContainer">
+                                <strong>Current Author:</strong> <span id="currentAuthor"></span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary-gray btn-rounded black-text" value="Cancel" data-dismiss="modal">
+                            <i class="fa fa-times prefix" style="padding-right:.4rem; color:black !important; margin-top:-.19rem;"></i>
+                            Cancel
+                        </button>
+                        <button id="editHecpSubmit" type="button" class="btn btn-primary btn-rounded float-right" onclick="proceedToInWorkEditAfterWarning();">PROCEED TO EDIT HECP</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="hecpDataMigrationCheckModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog modal-md" role="document">
+            <div class="modal-content">
+                <div class="modal-header blue darken-1 white-text">
+                    <h4 class="modal-title">Author Review Required</h4>
+                    <button type="button" class="close text-white select-close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div id="hecpDataMigrationCheckModalBody">
+                    <div class="modal-body" style="padding: 0rem 3.5rem 0 3.5rem; margin-top:1.2rem">
+                        <label id="lblDataMigrationConfirmationDataMigration" class="select-line-label font-weight-normal">
+                            You are receiving this message because this HECP has migrated to the new format- The author of this HECP must review the data and hit SUBMIT prior to approval.
+                            <div id="currentAuthorContainerDataMigration" class="currentAuthorContainer">
+                                <strong>Current Author:</strong> <span id="currentAuthorDataMigration"></span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary-gray btn-rounded black-text" value="Cancel" data-dismiss="modal">
+                            <i class="fa fa-times prefix" style="padding-right:.4rem; color:black !important; margin-top:-.19rem;"></i>
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script>
+    $(document).ready(function () {
+        validateHECPFilterButtonPublished();
+        @if (isPublished)
+        {
+            <text>
+                $('#published-partial').data('loaded', true);
+                $('#draft-partial').data('loaded', false);
+            </text>
+        }
+        else
+        {
+            <text>
+                $('#draft-partial').data('loaded', true);
+                $('#published-partial').data('loaded', false);
+            </text>
+        }
+    });
+</script>
